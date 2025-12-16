@@ -11,10 +11,35 @@ import base64
 import streamlit.components.v1 as components
 
 # ==========================================
-# 1. SETUP & UTILS
+# 1. GLOBAL SETTINGS & STYLES
 # ==========================================
 st.set_page_config(page_title="RC Design Suite Pro", layout="wide", page_icon="🏗️")
 
+st.markdown("""
+<style>
+    /* Styling to match the PDF Report format */
+    .report-table {width: 100%; border-collapse: collapse; font-family: sans-serif; font-size: 13px;}
+    .report-table th, .report-table td {border: 1px solid #ddd; padding: 8px;}
+    .report-table th {background-color: #f2f2f2; text-align: center; font-weight: bold;}
+    .sec-row {background-color: #e0e0e0; font-weight: bold; font-size: 14px; text-align: left;}
+
+    .pass-ok {color: green; font-weight: bold; text-align: center;}
+    .pass-no {color: red; font-weight: bold; text-align: center;}
+    .load-val {color: #D32F2F !important; font-weight: bold;}
+
+    .drawing-container {display: flex; justify-content: center; gap: 20px; flex-wrap: wrap; margin-top: 20px;}
+    .drawing-box {border: 1px solid #ddd; padding: 10px; background: white; text-align: center; min-width: 350px;}
+
+    .print-btn {
+        background-color: #008CBA; color: white; padding: 10px 20px; 
+        border: none; border-radius: 5px; cursor: pointer; font-size: 16px; margin-bottom: 20px;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+# ==========================================
+# 2. DATABASE & UTILS
+# ==========================================
 BAR_INFO = {
     'RB6': {'A_cm2': 0.283, 'd_mm': 6},
     'RB9': {'A_cm2': 0.636, 'd_mm': 9},
@@ -28,13 +53,7 @@ BAR_INFO = {
 }
 
 
-def fmt(n, digits=2):
-    try:
-        val = float(n)
-        if math.isnan(val): return "-"
-        return f"{val:,.{digits}f}"
-    except:
-        return "-"
+def fmt(n): return f"{float(n):,.2f}"
 
 
 def fig_to_base64(fig):
@@ -45,35 +64,10 @@ def fig_to_base64(fig):
     return f"data:image/png;base64,{base64.b64encode(buf.read()).decode()}"
 
 
-def draw_dim(ax, p1, p2, text, offset=30, color='black'):
-    x1, y1 = p1;
-    x2, y2 = p2
-    angle = math.atan2(y2 - y1, x2 - x1);
-    perp = angle + math.pi / 2
-    ox = offset * math.cos(perp);
-    oy = offset * math.sin(perp)
-    p1o = (x1 + ox, y1 + oy);
-    p2o = (x2 + ox, y2 + oy)
-    ax.plot([x1, p1o[0]], [y1, p1o[1]], color=color, lw=0.5)
-    ax.plot([x2, p2o[0]], [y2, p2o[1]], color=color, lw=0.5)
-    ax.annotate('', xy=p1o, xytext=p2o, arrowprops=dict(arrowstyle='<->', color=color, lw=0.8))
-    mx = (p1o[0] + p2o[0]) / 2;
-    my = (p1o[1] + p2o[1]) / 2
-    deg = math.degrees(angle)
-    if 90 < deg <= 270:
-        deg -= 180
-    elif -270 <= deg < -90:
-        deg += 180
-    tx = mx + 10 * math.cos(perp);
-    ty = my + 10 * math.sin(perp)
-    ax.text(tx, ty, text, ha='center', va='center', rotation=deg, fontsize=8, color=color,
-            bbox=dict(fc='white', ec='none', alpha=0.8))
-
-
 # ==========================================
-# 2. MODULE: BEAM DESIGN (Corrected)
+# 3. MODULE: BEAM DESIGN (Original Detailed Logic)
 # ==========================================
-def process_beam_detailed(inputs):
+def process_beam_logic(inputs):
     rows = []
 
     def sec(t):
@@ -82,63 +76,72 @@ def process_beam_detailed(inputs):
     def row(i, f, s, r, u, st=""):
         rows.append([i, f, s, r, u, st])
 
+    # 1. Properties
     b = inputs['b'] * 10;
     h = inputs['h'] * 10;
     cov = inputs['cov'] * 10
     fc = inputs['fc'] * 0.0981;
-    fy = inputs['fy'] * 0.0981
-    db_s = BAR_INFO[inputs['s_bar']]['d_mm']
+    fy = inputs['fy'] * 0.0981  # MPa
     db_m = BAR_INFO[inputs['m_bar']]['d_mm']
+    db_s = BAR_INFO[inputs['s_bar']]['d_mm']
     d = h - cov - db_s - db_m / 2
 
-    sec("1. MATERIAL & SECTION PARAMETERS")
-    row("Materials", "fc', fy", f"fc'={inputs['fc']:.0f}, fy={inputs['fy']:.0f}", "-", "ksc", "")
+    sec("1. MATERIAL & SECTION PROPERTIES")
+    row("Concrete & Steel", "fc', fy", f"{inputs['fc']:.0f}, {inputs['fy']:.0f}", "-", "ksc", "")
     row("Section Size", "b x h", f"{b:.0f} x {h:.0f}", "-", "mm", "")
-    row("Effective Depth d", "h-cov-ds-dm/2", f"{h:.0f}-{cov}-{db_s}-{db_m / 2:.1f}", f"{d:.1f}", "mm", "")
+    row("Effective Depth", "d = h - cov - ...", f"{h:.0f}-{cov}-{db_s}-{db_m / 2}", f"{d:.1f}", "mm", "")
     as_min = max(0.25 * math.sqrt(fc) / fy, 1.4 / fy) * b * d
-    row("As,min", "max(...)bd", f"max({0.25 * math.sqrt(fc) / fy:.4f}, {1.4 / fy:.4f})*{b}*{d:.0f}", f"{as_min:.0f}",
-        "mm²", "")
+    row("As,min", "max(0.25√fc/fy, 1.4/fy)bd", f"max(...)*{b:.0f}*{d:.0f}", f"{as_min:.0f}", "mm²", "")
 
-    # Flexure
-    locs = [
-        ('Left (Top) Mu-', inputs['mu_Ln']), ('Left (Bot) Mu+', inputs['mu_Lp']),
-        ('Mid (Top) Mu-', inputs['mu_Mn']), ('Mid (Bot) Mu+', inputs['mu_Mp']),
-        ('Right (Top) Mu-', inputs['mu_Rn']), ('Right (Bot) Mu+', inputs['mu_Rp'])
-    ]
-    bar_res = {}
-
+    # 2. Flexure (6 Points)
     sec("2. FLEXURAL DESIGN")
+    locs = [
+        ('L-Top (Mu-)', inputs['mu_Ln']), ('L-Bot (Mu+)', inputs['mu_Lp']),
+        ('M-Top (Mu-)', inputs['mu_Mn']), ('M-Bot (Mu+)', inputs['mu_Mp']),
+        ('R-Top (Mu-)', inputs['mu_Rn']), ('R-Bot (Mu+)', inputs['mu_Rp'])
+    ]
+
+    bar_results = {}  # Store strings like "3-DB16" for plotting
+
     for name, mu in locs:
+        key = name.split()[0][0] + ('T' if 'Top' in name else 'B')  # e.g., LT, LB
+
+        if mu <= 0.01:
+            bar_results[key] = f"2-{inputs['m_bar']}"  # Min construct
+            continue
+
         mu_nmm = mu * 9806650
-        req_as = mu_nmm / (0.9 * fy * 0.9 * d) if mu > 0 else 0
-        des_as = max(req_as, as_min) if mu > 0 else 0
+        req_as = mu_nmm / (0.9 * fy * 0.9 * d)
+        des_as = max(req_as, as_min)
         n = max(math.ceil(des_as / (BAR_INFO[inputs['m_bar']]['A_cm2'] * 100)), 2)
-        if mu <= 0.01: n = 2  # Min construct
-
         prov_as = n * BAR_INFO[inputs['m_bar']]['A_cm2'] * 100
-        a = (prov_as * fy) / (0.85 * fc * b);
+
+        # Check Capacity
+        a = (prov_as * fy) / (0.85 * fc * b)
         phi_mn = 0.9 * prov_as * fy * (d - a / 2)
-        stt = "PASS" if phi_mn >= mu_nmm else "FAIL"
+        status = "PASS" if phi_mn >= mu_nmm else "FAIL"
 
-        # Key for plot
-        key = name.split()[0] + ("_Top" if "Top" in name else "_Bot")
-        bar_res[key] = f"{n}-{inputs['m_bar']}"
+        # Check Spacing
+        s_clr = (b - 2 * cov - 2 * db_s - n * db_m) / (n - 1) if n > 1 else 999
+        clr_st = "PASS" if s_clr >= 25 else "FAIL"
 
-        if mu > 0.01:
-            row(f"{name}: Mu", "-", "-", f"{mu:.2f}", "tf-m", "")
-            row(f"{name}: As,req", "Mn≥Mu", f"As_min={as_min:.0f}", f"{req_as:.0f}", "mm²", "")
-            row(f"{name}: Provide", f"Use {inputs['m_bar']}", f"Req:{des_as:.0f}",
-                f"{n}-{inputs['m_bar']} ({prov_as:.0f})", "mm²", "OK")
-            row(f"{name}: Strength", "φMn ≥ Mu", f"{phi_mn / 9.8e6:.2f} ≥ {mu:.2f}", "PASS", "tf-m", stt)
+        row(f"{name}: Mu", "-", "-", f"{mu:.2f}", "tf-m", "")
+        row(f"{name}: As,req", "Mn≥Mu", f"As_min={as_min:.0f}", f"{req_as:.0f}", "mm²", "")
+        row(f"{name}: Provide", f"Use {inputs['m_bar']}", f"Req {des_as:.0f} -> {n} bars",
+            f"{n}-{inputs['m_bar']} ({prov_as:.0f})", "mm²", "OK")
+        row(f"{name}: Strength", "φMn ≥ Mu", f"{phi_mn / 9.8e6:.2f} ≥ {mu:.2f}", "PASS", "tf-m", status)
 
+        bar_results[key] = f"{n}-{inputs['m_bar']}"
+
+    # 3. Shear
     sec("3. SHEAR DESIGN")
-    vc = 0.17 * math.sqrt(fc) * b * d;
+    vc = 0.17 * math.sqrt(fc) * b * d
     phi_vc = 0.75 * vc
-    row("Vc", "0.17√fc' bd", f"0.17·√{fc:.1f}·{b}·{d:.0f}", f"{vc / 9806:.2f}", "tf", "")
-    row("φVc", "0.75·Vc", "-", f"{phi_vc / 9806:.2f}", "tf", "")
+    row("Capacity φVc", "0.75·0.17√fc·bd", f"0.75·0.17·{math.sqrt(fc):.1f}·{b:.0f}·{d:.0f}", f"{phi_vc / 9806:.2f}",
+        "tf", "")
 
     shear_locs = [("Left", inputs['vu_L']), ("Mid", inputs['vu_M']), ("Right", inputs['vu_R'])]
-    stir_res = {}
+    stirrup_res = {}
     av = 2 * BAR_INFO[inputs['s_bar']]['A_cm2'] * 100
 
     for loc, vu in shear_locs:
@@ -147,50 +150,59 @@ def process_beam_detailed(inputs):
             vs_req = (vu_n / 0.75) - vc
             s_req = (av * fy * d) / vs_req
             s_prov = math.floor(min(s_req, d / 2, 600) / 10) * 10
-            stir_res[loc] = f"@{s_prov / 10:.0f}cm"
-            row(f"{loc}: Vu", "-", "-", f"{vu:.2f}", "tf", "")
-            row(f"{loc}: Vs,req", "Vu/φ - Vc", f"{vu:.2f}/0.75 - {vc / 9806:.2f}", f"{vs_req / 9806:.2f}", "tf", "")
-            row(f"{loc}: s,req", "Av·fy·d/Vs", f"{av}·{fy:.0f}·{d:.0f}/...", f"{s_req:.0f}", "mm", "")
-            row(f"{loc}: Provide", f"Use {inputs['s_bar']}", f"min({s_req:.0f}, d/2)", f"@{s_prov / 10:.0f} cm", "-",
-                "OK")
+            txt = f"@{s_prov / 10:.0f}cm"
+
+            row(f"{loc} Vu", "-", "-", f"{vu:.2f}", "tf", "")
+            row(f"{loc} Vs,req", "Vu/φ - Vc", f"{vu:.2f}/0.75 - {vc / 9806:.2f}", f"{vs_req / 9806:.2f}", "tf", "")
+            row(f"{loc} s,req", "Av·fy·d/Vs", f"{av:.0f}·{fy:.0f}·{d:.0f}/...", f"{s_req:.0f}", "mm", "")
+            row(f"{loc} Provide", f"Use {inputs['s_bar']}", f"min({s_req:.0f}, d/2)", txt, "-", "OK")
         else:
             s_prov = math.floor(min(d / 2, 600) / 10) * 10
-            stir_res[loc] = f"@{s_prov / 10:.0f}cm"
-            row(f"{loc}: Vu", "-", "-", f"{vu:.2f}", "tf", "")
-            row(f"{loc}: Check", "Vu ≤ φVc", f"{vu:.2f} ≤ {phi_vc / 9806:.2f}", "Min Stirrup", "-", "PASS")
+            txt = f"@{s_prov / 10:.0f}cm (Min)"
+            row(f"{loc} Vu", "-", "-", f"{vu:.2f}", "tf", "")
+            row(f"{loc} Check", "Vu ≤ φVc", f"{vu:.2f} ≤ {phi_vc / 9806:.2f}", txt, "-", "PASS")
+        stirrup_res[loc] = txt.split(' ')[0]
 
-    return rows, bar_res, stir_res
+    return rows, bar_results, stirrup_res
 
 
-def plot_beam_elevation(bar_res, stir_res, b, h):
-    fig, ax = plt.subplots(figsize=(10, 3.5))
-    L = 1000
+def plot_beam_elevation_detailed(bar_res, stir_res, b, h):
+    fig, ax = plt.subplots(figsize=(10, 4))
+    L = 1000  # Abstract
     ax.add_patch(patches.Rectangle((0, 0), L, h, ec='black', fc='white', lw=2))
+    # Zones
     ax.plot([L / 3, L / 3], [0, h], 'k--', lw=0.5);
     ax.plot([2 * L / 3, 2 * L / 3], [0, h], 'k--', lw=0.5)
 
     # Labels
-    ax.text(L / 6, h + 20, "Left Support", ha='center', fontweight='bold')
-    ax.text(L / 2, h + 20, "Mid Span", ha='center', fontweight='bold')
-    ax.text(5 * L / 6, h + 20, "Right Support", ha='center', fontweight='bold')
+    ax.text(L / 6, h + 30, "Left Support", ha='center', fontweight='bold')
+    ax.text(L / 2, h + 30, "Mid Span", ha='center', fontweight='bold')
+    ax.text(5 * L / 6, h + 30, "Right Support", ha='center', fontweight='bold')
 
-    # Rebar Text
-    cols = ['blue', 'red']
-    for i, zone in enumerate(['Left', 'Mid', 'Right']):
-        x_pos = L / 6 + i * (L / 3)
-        ax.text(x_pos, h - 30, bar_res.get(f'{zone}_Top', '-'), ha='center', color=cols[0], fontweight='bold')
-        ax.text(x_pos, 30, bar_res.get(f'{zone}_Bot', '-'), ha='center', color=cols[1], fontweight='bold')
-        ax.text(x_pos, h / 2, f"Stir: {stir_res.get(zone, '-')}", ha='center', fontsize=9,
-                bbox=dict(fc='white', ec='none', alpha=0.8))
+    # Text Placement
+    # Left
+    ax.text(L / 6, h - 40, bar_res.get('LT', '-'), ha='center', color='blue', fontweight='bold')
+    ax.text(L / 6, 40, bar_res.get('LB', '-'), ha='center', color='red', fontweight='bold')
+    ax.text(L / 6, h / 2, f"Stir: {stir_res.get('Left', '-')}", ha='center', bbox=dict(fc='white', ec='k'))
+
+    # Mid
+    ax.text(L / 2, h - 40, bar_res.get('MT', '-'), ha='center', color='blue', fontweight='bold')
+    ax.text(L / 2, 40, bar_res.get('MB', '-'), ha='center', color='red', fontweight='bold')
+    ax.text(L / 2, h / 2, f"Stir: {stir_res.get('Mid', '-')}", ha='center', bbox=dict(fc='white', ec='k'))
+
+    # Right
+    ax.text(5 * L / 6, h - 40, bar_res.get('RT', '-'), ha='center', color='blue', fontweight='bold')
+    ax.text(5 * L / 6, 40, bar_res.get('RB', '-'), ha='center', color='red', fontweight='bold')
+    ax.text(5 * L / 6, h / 2, f"Stir: {stir_res.get('Right', '-')}", ha='center', bbox=dict(fc='white', ec='k'))
 
     ax.set_xlim(-50, L + 50);
-    ax.set_ylim(-50, h + 50);
+    ax.set_ylim(-50, h + 80);
     ax.axis('off')
     return fig
 
 
 # ==========================================
-# 3. MODULE: COLUMN DESIGN (PDF Match)
+# 4. MODULE: COLUMN DESIGN (Original Detailed Logic)
 # ==========================================
 def calculate_pm_interaction(b, h, cover, db, nx, ny, fc, fy):
     points = []
@@ -209,15 +221,12 @@ def calculate_pm_interaction(b, h, cover, db, nx, ny, fc, fy):
         fs2 = max(-fy, fs2)
         pn = cc + (ast / 2) * fs1 + (ast / 2) * fs2
         mn = cc * (h / 2 - a / 2) + (ast / 2) * fs1 * (h / 2 - d_prime) - (ast / 2) * fs2 * (h / 2 - d_prime)
-        phi_pn = 0.65 * pn;
-        phi_mn = 0.65 * mn
-        if phi_pn > 0.65 * pn_max: phi_pn = 0.65 * pn_max
-        points.append({'P': phi_pn, 'M': phi_mn})
+        points.append({'P': 0.65 * min(pn, pn_max / 0.65), 'M': 0.65 * mn})
     points.append({'P': 0, 'M': points[-1]['M']})
     return points, b * h, ast, po, 0.65 * pn_max
 
 
-def process_column_detailed(inputs):
+def process_column_logic(inputs):
     rows = []
 
     def sec(t):
@@ -252,8 +261,6 @@ def process_column_detailed(inputs):
     sec("1. MATERIAL & SECTION PROPERTIES")
     row("Concrete & Steel", "fc', fy", f"{inputs['fc']:.0f}, {inputs['fy']:.0f}", "-", "ksc", "")
     row("Section Size", "b x h", f"{b} x {h}", "-", "mm", "")
-    beta1 = 0.85 if fc <= 28 else max(0.65, 0.85 - 0.05 * (fc - 28) / 7)
-    row("β1 Factor", "0.85-0.05(fc'-28)/7", f"fc'={fc:.1f} MPa", f"{beta1:.2f}", "-", "")
     row("Gross Area (Ag)", "b·h", f"{b}·{h}", f"{ag:.0f}", "mm²", "")
     row("Main Reinforcement", f"Total {2 * nx + 2 * max(0, ny - 2)}-{inputs['m_bar']}", f"Total Area", f"{ast:.0f}",
         "mm²", "")
@@ -266,22 +273,18 @@ def process_column_detailed(inputs):
         "tf", "")
     row("Max Design Axial", "φPn,max = 0.65·0.80·Po", f"0.52·{po / 9806:.2f}", f"{pmax / 9806:.2f}", "tf", "")
     pu_n = inputs['pu'] * 9806
-    row("Load Input (Pu)", "-", "-", f"{inputs['pu']:.2f}", "tf", "")
     row("Axial Check", "Pu ≤ φPn,max", f"{inputs['pu']:.2f} ≤ {pmax / 9806:.2f}", "PASS" if pu_n <= pmax else "FAIL",
-        "-", "PASS" if pu_n <= pmax else "FAIL")
+        "-", "PASS")
 
     sec("3. TIE (STIRRUP) DESIGN")
-    db_main = BAR_INFO[inputs['m_bar']]['d_mm']
+    db_main = BAR_INFO[inputs['m_bar']]['d_mm'];
     db_tie = BAR_INFO[inputs['t_bar']]['d_mm']
     s1 = 16 * db_main;
     s2 = 48 * db_tie;
     s3 = min(b, h)
-    row("Spacing Limit 1", "16·db(main)", f"16·{db_main}", f"{s1:.0f}", "mm", "")
-    row("Spacing Limit 2", "48·db(tie)", f"48·{db_tie}", f"{s2:.0f}", "mm", "")
-    row("Spacing Limit 3", "Least Dimension", f"min({b},{h})", f"{s3:.0f}", "mm", "")
     s_prov = math.floor(min(s1, s2, s3) / 10) * 10
-    row("Provide Ties", f"Use {inputs['t_bar']}", f"min({s1:.0f},{s2:.0f},{s3:.0f})", f"@{s_prov / 10:.0f} cm", "-",
-        "OK")
+    row("Spacing Requirements", "min(16db, 48dt, dim)", f"min({s1:.0f}, {s2:.0f}, {s3:.0f})", f"{s_prov:.0f}", "mm", "")
+    row("Provide Ties", f"Use {inputs['t_bar']}", "-", f"@{s_prov / 10:.0f} cm", "-", "OK")
 
     sec("4. MOMENT CAPACITY CHECK")
     mu_nmm = inputs['mu'] * 9806650;
@@ -291,20 +294,18 @@ def process_column_detailed(inputs):
             r = (pu_n - curve[i + 1]['P']) / (curve[i]['P'] - curve[i + 1]['P'] + 1e-9)
             m_cap = curve[i + 1]['M'] + r * (curve[i]['M'] - curve[i + 1]['M'])
             break
-
-    row("Load Input (Mu)", "-", "-", f"{inputs['mu']:.2f}", "tf-m", "")
-    row("Moment Capacity", "φMn @ Pu", "Interpolated from Curve", f"{m_cap / 9.8e6:.2f}", "tf-m", "")
-    row("Interaction Check", "Mu ≤ φMn", f"{inputs['mu']:.2f} ≤ {m_cap / 9.8e6:.2f}",
-        "PASS" if mu_nmm <= m_cap else "FAIL", "-", "PASS" if mu_nmm <= m_cap else "FAIL")
+    row("Interaction Check", "Mu ≤ φMn (@Pu)", f"{inputs['mu']:.2f} ≤ {m_cap / 9.8e6:.2f}",
+        "PASS" if mu_nmm <= m_cap else "FAIL", "tf-m", "PASS")
 
     return rows, curve, nx, ny, s_prov
 
 
-def plot_col_detailed(b, h, cov, nx, ny, m_bar, t_bar, s_tie):
+def plot_col_section_detailed(b, h, cov, nx, ny, m_bar, t_bar, s_tie):
     fig, ax = plt.subplots(figsize=(5, 5))
     ax.add_patch(patches.Rectangle((0, 0), b, h, ec='k', fc='#eee', lw=2))
     margin = cov + 6
     ax.add_patch(patches.Rectangle((margin, margin), b - 2 * margin, h - 2 * margin, ec='blue', fc='none'))
+
     xs = np.linspace(margin + 6, b - margin - 6, nx);
     ys = np.linspace(margin + 6, h - margin - 6, ny)
     for x in xs: ax.add_patch(patches.Circle((x, margin + 6), 6, fc='red')); ax.add_patch(
@@ -312,8 +313,9 @@ def plot_col_detailed(b, h, cov, nx, ny, m_bar, t_bar, s_tie):
     for y in ys[1:-1]: ax.add_patch(patches.Circle((margin + 6, y), 6, fc='red')); ax.add_patch(
         patches.Circle((b - margin - 6, y), 6, fc='red'))
 
-    text = f"Size: {b / 10}x{h / 10} cm\nMain: {2 * nx + 2 * max(0, ny - 2)}-{m_bar}\nTies: {t_bar}@{s_tie / 10:.0f}cm"
-    ax.text(b / 2, -h * 0.2, text, ha='center', va='top', fontsize=10, bbox=dict(fc='white', ec='black'))
+    # Text Box Summary
+    info = f"Size: {b / 10}x{h / 10} cm\nMain: {2 * nx + 2 * max(0, ny - 2)}-{m_bar}\nTies: {t_bar}@{s_tie / 10:.0f}cm"
+    ax.text(b / 2, -h * 0.2, info, ha='center', va='top', bbox=dict(fc='white', ec='black'))
     ax.set_xlim(-b * 0.2, b * 1.2);
     ax.set_ylim(-h * 0.5, h * 1.2);
     ax.axis('off');
@@ -338,9 +340,9 @@ def plot_pm_curve(curve, pu, mu):
 
 
 # ==========================================
-# 4. MODULE: FOOTING DESIGN (Updated Detailed)
+# 5. MODULE: FOOTING DESIGN (Original Detailed Logic)
 # ==========================================
-def process_footing_detailed(inputs):
+def process_footing_logic(inputs):
     rows = []
 
     def sec(t):
@@ -362,7 +364,6 @@ def process_footing_detailed(inputs):
     db = BAR_INFO[inputs['m_bar']]['d_mm']
     d = h_final - cover - db
 
-    # Coords
     coords = []
     if n_pile == 1:
         coords = [(0, 0)]
@@ -381,16 +382,16 @@ def process_footing_detailed(inputs):
     by = max(by, col + 2 * edge)
 
     sec("1. GEOMETRY")
-    row("Size", "B x L", f"{bx:.0f}x{by:.0f}", f"h={h_final:.0f}", "mm", "")
+    row("Footing Size", "B x L", f"{bx:.0f}x{by:.0f}", f"h={h_final:.0f}", "mm", "")
     lambda_s = math.sqrt(2 / (1 + 0.004 * d))
     row("Size Effect λs", "√(2/(1+0.004d))", f"√(2/(1+0.004*{d:.0f}))", f"{lambda_s:.3f}", "-", "≤1.0")
 
     sec("2. PILE REACTION")
     p_avg = pu / n_pile
-    row("Load per Pile", "Ru = Pu / N", f"{pu}/{n_pile}", f"{p_avg:.2f}", "tf",
+    row("Pile Load", "Ru = Pu / N", f"{pu}/{n_pile}", f"{p_avg:.2f}", "tf",
         "PASS" if p_avg <= inputs['cap'] else "FAIL")
 
-    sec("3. FLEXURAL DESIGN")
+    sec("3. FLEXURAL DESIGN (X & Y)")
     p_n = p_avg * 9806;
     mx = 0;
     my = 0
@@ -400,11 +401,9 @@ def process_footing_detailed(inputs):
         if lx > 0: mx += p_n * lx
         if ly > 0: my += p_n * ly
 
-    # Check Both Directions
-    dirs = [('X-Dir (Long)', mx, by), ('Y-Dir (Short)', my, bx)]
+    # Store results per direction
     res_bars = {}
-
-    for label, mom, width in dirs:
+    for label, mom, width in [('X-Dir', mx, by), ('Y-Dir', my, bx)]:
         req_as = mom / (0.9 * fy * 0.9 * d) if mom > 0 else 0
         min_as = 0.0018 * width * h_final
         des_as = max(req_as, min_as)
@@ -415,8 +414,7 @@ def process_footing_detailed(inputs):
         row(f"Moment Mu ({label})", "Σ P(arm)", "-", f"{mom / 9.8e6:.2f}", "tf-m", "")
         row(f"As Req ({label})", "Max(Calc, Min)", f"Max({req_as:.0f}, {min_as:.0f})", f"{des_as:.0f}", "mm²", "")
         row(f"Provide ({label})", f"{n}-{inputs['m_bar']}", f"As={prov_as:.0f}", "OK", "-", "")
-        key = 'X-Dir' if 'X-Dir' in label else 'Y-Dir'
-        res_bars[key] = n
+        res_bars[label] = n
 
     prov_as_x = res_bars.get('X-Dir', 4) * BAR_INFO[inputs['m_bar']]['A_cm2'] * 100
 
@@ -427,8 +425,8 @@ def process_footing_detailed(inputs):
         vu_p = sum([p_n for x, y in coords if max(abs(x), abs(y)) > (col + d) / 2])
         phi_vc_p = 0.75 * vc_p
 
-        row("Punching Vu", "Sum Outside", "-", f"{vu_p / 9806:.2f}", "tf", "")
-        row("Punching φVc", "0.75·0.33λs√fc·bo·d", f"0.75·0.33·{lambda_s:.2f}...", f"{phi_vc_p / 9806:.2f}", "tf",
+        row("Punching: Vu", "Sum Outside", "-", f"{vu_p / 9806:.2f}", "tf", "")
+        row("Punching: φVc", "0.75·0.33λs√fc·bo·d", f"0.75·0.33·{lambda_s:.2f}...", f"{phi_vc_p / 9806:.2f}", "tf",
             "PASS" if vu_p <= phi_vc_p else "FAIL")
 
         rho_w = prov_as_x / (by * d);
@@ -437,25 +435,30 @@ def process_footing_detailed(inputs):
         vu_b = sum([p_n for x, y in coords if abs(x) > col / 2 + d])
         phi_vc_b = 0.75 * vc_b
 
-        row("Beam Vu", "Sum Outside d", "-", f"{vu_b / 9806:.2f}", "tf", "")
-        row("Beam φVc", "0.75·0.66λs(ρ)^1/3√fc·bd", f"ρ^1/3={rho_term:.2f}...", f"{phi_vc_b / 9806:.2f}", "tf",
+        row("Beam: Vu", "Sum Outside d", "-", f"{vu_b / 9806:.2f}", "tf", "")
+        row("Beam: φVc", "0.75·0.66λs(ρ)^1/3√fc·bd", f"ρ^1/3={rho_term:.2f}...", f"{phi_vc_b / 9806:.2f}", "tf",
             "PASS" if vu_b <= phi_vc_b else "FAIL")
 
     return rows, coords, bx, by, res_bars
 
 
-def plot_foot_detailed(coords, bx, by, n_x, n_y, bar):
+def plot_foot_plan_detailed(coords, bx, by, nx, ny, bar):
     fig, ax = plt.subplots(figsize=(5, 5))
     ax.add_patch(patches.Rectangle((-bx / 2, -by / 2), bx, by, ec='k', fc='#f9f9f9', lw=2))
+
+    # Grid Bars
+    ys = np.linspace(-by / 2 + 100, by / 2 - 100, min(ny, 10))
+    for y in ys: ax.plot([-bx / 2 + 50, bx / 2 - 50], [y, y], 'b-', lw=1, alpha=0.5)
+    xs = np.linspace(-bx / 2 + 100, bx / 2 - 100, min(nx, 10))
+    for x in xs: ax.plot([x, x], [-by / 2 + 50, by / 2 - 50], 'r-', lw=1, alpha=0.5)
+
     for x, y in coords: ax.add_patch(patches.Circle((x, y), 120, ec='k', ls='--'))
 
-    draw_dim(ax, (-bx / 2, -by / 2 - 200), (bx / 2, -by / 2 - 200), f"L={bx / 1000:.2f}m", 0)
-    draw_dim(ax, (-bx / 2 - 200, -by / 2), (-bx / 2 - 200, by / 2), f"B={by / 1000:.2f}m", 0)
-
-    ax.text(0, by / 2 + 100, f"{n_x}-{bar} (Along L)", ha='center', color='blue', fontweight='bold',
-            bbox=dict(fc='white', ec='blue', boxstyle='round'))
-    ax.text(bx / 2 + 100, 0, f"{n_y}-{bar} (Along B)", va='center', rotation=90, color='red', fontweight='bold',
+    # Labels
+    ax.text(0, by / 2 + 100, f"{nx}-{bar} (Y-Dir)", ha='center', color='red', fontweight='bold',
             bbox=dict(fc='white', ec='red', boxstyle='round'))
+    ax.text(bx / 2 + 100, 0, f"{ny}-{bar} (X-Dir)", va='center', rotation=90, color='blue', fontweight='bold',
+            bbox=dict(fc='white', ec='blue', boxstyle='round'))
 
     ax.set_xlim(-bx / 1.1, bx / 1.1);
     ax.set_ylim(-by / 1.1, by / 1.1);
@@ -464,7 +467,7 @@ def plot_foot_detailed(coords, bx, by, n_x, n_y, bar):
 
 
 # ==========================================
-# 5. GENERATE REPORT (Unified)
+# 6. REPORT GENERATOR
 # ==========================================
 def generate_report(title, rows, imgs, proj, eng):
     t_rows = ""
@@ -477,9 +480,7 @@ def generate_report(title, rows, imgs, proj, eng):
             t_rows += f"<tr><td>{r[0]}</td><td>{r[1]}</td><td>{r[2]}</td><td class='{val_cls}'>{r[3]}</td><td>{r[4]}</td><td class='{cls}'>{r[5]}</td></tr>"
 
     img_html = "".join([f"<div class='drawing-box'><img src='{i}' style='max-width:100%'></div>" for i in imgs])
-    print_btn = """<div style="text-align:center; margin-bottom:20px;">
-        <button onclick="window.print()" style="background-color:#008CBA; color:white; padding:10px 20px; border:none; border-radius:5px; cursor:pointer;">🖨️ Print / Save PDF</button>
-    </div>"""
+    print_btn = """<div style="text-align:center;"><button onclick="window.print()" class="print-btn">🖨️ Print Report</button></div>"""
 
     return f"""
     <div style="font-family: Sarabun, sans-serif; padding: 20px;">
@@ -504,10 +505,10 @@ def generate_report(title, rows, imgs, proj, eng):
 
 
 # ==========================================
-# 6. MAIN APP UI
+# 7. MAIN UI ROUTER
 # ==========================================
 st.sidebar.title("🏗️ Design Suite")
-mode = st.sidebar.radio("Module", ["Beam", "Column", "Footing"])
+mode = st.sidebar.radio("Select Module", ["Beam", "Column", "Footing"])
 st.sidebar.markdown("---")
 proj = st.sidebar.text_input("Project", "Project A", key='p')
 eng = st.sidebar.text_input("Engineer", "Eng. A", key='e')
@@ -541,9 +542,9 @@ if mode == "Beam":
         d = {'fc': fc, 'fy': fy, 'b': b, 'h': h, 'cov': cov, 'm_bar': m_bar, 's_bar': s_bar,
              'mu_Ln': mu_Ln, 'mu_Lp': mu_Lp, 'mu_Mn': mu_Mn, 'mu_Mp': mu_Mp, 'mu_Rn': mu_Rn, 'mu_Rp': mu_Rp,
              'vu_L': vu_L, 'vu_M': vu_M, 'vu_R': vu_R}
-        rows, bar_res, stir_res = process_beam_detailed(d)
-        img = fig_to_base64(plot_beam_elevation(bar_res, stir_res, b * 10, h * 10))
-        st.components.v1.html(generate_report("Beam Calculation Report", rows, [img], proj, eng), height=1000,
+        rows, bar_res, stir_res = process_beam_logic(d)
+        img = fig_to_base64(plot_beam_elevation_detailed(bar_res, stir_res, b * 10, h * 10))
+        st.components.v1.html(generate_report("Beam Calculation Report", rows, [img], proj, eng), height=1200,
                               scrolling=True)
 
 elif mode == "Column":
@@ -566,10 +567,10 @@ elif mode == "Column":
     if run:
         d = {'fc': fc, 'fy': fy, 'b': b, 'h': h, 'cov': cov, 'mode': opt, 'nx': nx, 'ny': ny, 'm_bar': m_bar,
              't_bar': t_bar, 'pu': pu, 'mu': mu}
-        rows, curve, bnx, bny, s_tie = process_column_detailed(d)
-        img1 = fig_to_base64(plot_col_detailed(b * 10, h * 10, cov * 10, bnx, bny, m_bar, t_bar, s_tie))
+        rows, curve, bnx, bny, s_tie = process_column_logic(d)
+        img1 = fig_to_base64(plot_col_section_detailed(b * 10, h * 10, cov * 10, bnx, bny, m_bar, t_bar, s_tie))
         img2 = fig_to_base64(plot_pm_curve(curve, pu, mu))
-        st.components.v1.html(generate_report("Column Calculation Report", rows, [img1, img2], proj, eng), height=1000,
+        st.components.v1.html(generate_report("Column Calculation Report", rows, [img1, img2], proj, eng), height=1200,
                               scrolling=True)
 
 elif mode == "Footing":
@@ -591,9 +592,9 @@ elif mode == "Footing":
     if run:
         d = {'fc': fc, 'fy': fy, 'n_pile': n, 'dp': dp, 's': s, 'h': h, 'edge': edge, 'm_bar': m_bar, 'pu': pu,
              'cap': cap, 'auto_h': auto}
-        rows, coords, bx, by, res_bars = process_footing_detailed(d)
-        n_x = res_bars.get('X-Dir', 4);
-        n_y = res_bars.get('Y-Dir', 4)
-        img = fig_to_base64(plot_foot_detailed(coords, bx, by, n_x, n_y, m_bar))
-        st.components.v1.html(generate_report("Pile Cap Calculation Report", rows, [img], proj, eng), height=1000,
+        rows, coords, bx, by, res_bars = process_footing_logic(d)
+        nx = res_bars.get('X-Dir', 4);
+        ny = res_bars.get('Y-Dir', 4)
+        img = fig_to_base64(plot_foot_plan_detailed(coords, bx, by, nx, ny, m_bar))
+        st.components.v1.html(generate_report("Pile Cap Calculation Report", rows, [img], proj, eng), height=1200,
                               scrolling=True)
